@@ -100,6 +100,22 @@ exports.getUserDetails = async (req, res) => {
       [user_id]
     );
 
+    const profile = await pool.query(
+      `SELECT gender, date_of_birth
+       FROM user_profiles
+       WHERE user_id = $1
+       LIMIT 1`,
+      [user_id]
+    );
+
+    const medical = await pool.query(
+      `SELECT blood_group, conditions, allergies
+       FROM medical_records
+       WHERE user_id = $1
+       LIMIT 1`,
+      [user_id]
+    );
+
     const referrals = await pool.query(
       `SELECT name, phone, created_at
        FROM users
@@ -122,6 +138,8 @@ exports.getUserDetails = async (req, res) => {
 
     res.json({
       user,
+      profile: profile.rows[0] || null,
+      medical: medical.rows[0] || null,
       wallet: wallet.rows[0] || { balance: 0 },
       qr_codes: qrs.rows,
       contacts: contacts.rows,
