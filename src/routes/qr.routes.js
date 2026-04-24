@@ -27,8 +27,8 @@ router.post(
   activateQR
 );
 router.get("/my", verifyUser, getMyQRs);
-router.get("/:qr_code/history", verifyUser, getQRHistory);
 router.get("/:qr_code", verifyUser, getMyQRDetails);
+router.get("/:qr_code/history", verifyUser, getQRHistory);
 router.put("/:qr_code/tag", verifyUser, validate(updateQRTagSchema), updateQRTag);
 router.put("/:qr_code/status", verifyUser, validate(updateQRStatusSchema), updateQRStatus);
 
