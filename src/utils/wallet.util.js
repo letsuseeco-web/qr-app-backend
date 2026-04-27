@@ -28,7 +28,6 @@ exports.addTransaction = async ({
     throw new Error("DB client is required");
   }
 
-  // 🔴 Validate input
   if (!user_id || !type || !amount) {
     throw new Error("Missing transaction fields");
   }
@@ -43,37 +42,38 @@ exports.addTransaction = async ({
     throw new Error("Amount must be greater than 0");
   }
 
-  // 🔒 Lock wallet row
+  // Ensure wallet exists
+  await exports.ensureWallet(client, user_id);
+
   const walletRes = await client.query(
-    "SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE",
+    `SELECT balance
+     FROM wallets
+     WHERE user_id = $1
+     FOR UPDATE`,
     [user_id]
   );
 
-  if (walletRes.rows.length === 0) {
-    throw new Error("Wallet not found");
-  }
-
   let balance = Number(walletRes.rows[0].balance);
 
-  // 🔴 Prevent negative balance
   if (type === "debit") {
     if (balance < amount) {
       throw new Error("Insufficient balance");
     }
+
     balance -= amount;
   } else {
     balance += amount;
   }
 
-  // 🔹 Update wallet
   await client.query(
-    "UPDATE wallets SET balance = $1 WHERE user_id = $2",
+    `UPDATE wallets
+     SET balance = $1
+     WHERE user_id = $2`,
     [balance, user_id]
   );
 
-  // 🔹 Insert transaction
   await client.query(
-    `INSERT INTO transactions 
+    `INSERT INTO transactions
      (user_id, type, source, amount, balance_after)
      VALUES ($1, $2, $3, $4, $5)`,
     [user_id, type, source, amount, balance]
@@ -85,4 +85,12 @@ exports.addTransaction = async ({
      VALUES ($1, $2, $3, $4, $5)`,
     [user_id, type, amount, source, balance]
   );
+
+  return {
+    user_id,
+    type,
+    amount,
+    source,
+    balance_after: balance
+  };
 };

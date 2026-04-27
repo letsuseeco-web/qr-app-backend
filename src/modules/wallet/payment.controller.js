@@ -1,46 +1,98 @@
+const Razorpay = require("razorpay");
+const crypto = require("crypto");
 const pool = require("../../db");
 const { addTransaction } = require("../../utils/wallet.util");
 const { sendSuccess, sendError } = require("../../utils/response.util");
 
+const PAYMENT_SETTINGS_KEY = "payment_settings";
+
+/**
+ * Load Razorpay credentials from settings table
+ */
+async function getPaymentSettings(client = pool) {
+  const result = await client.query(
+    `SELECT value
+     FROM settings
+     WHERE key = $1
+     LIMIT 1`,
+    [PAYMENT_SETTINGS_KEY]
+  );
+
+  const settings = result.rows[0]?.value;
+
+  if (!settings?.razorpay_key_id || !settings?.razorpay_secret) {
+    throw new Error("Razorpay payment settings not configured");
+  }
+
+  return settings;
+}
+
+/**
+ * Create Razorpay Instance
+ */
+async function getRazorpayInstance() {
+  const settings = await getPaymentSettings();
+
+  return new Razorpay({
+    key_id: settings.razorpay_key_id,
+    key_secret: settings.razorpay_secret
+  });
+}
+
+/**
+ * Create Recharge Order
+ */
 exports.createRechargeOrder = async (req, res) => {
   try {
     const user_id = req.user.user_id;
-    const { amount, order_id, gateway } = req.body;
+    const { amount } = req.body;
 
-    const existing = await pool.query(
-      `SELECT id, user_id, amount, status, payment_id, order_id, gateway, created_at
-       FROM payments
-       WHERE order_id = $1
-         AND user_id = $2
-       LIMIT 1`,
-      [order_id, user_id]
-    );
-
-    if (existing.rows.length > 0) {
-      return sendSuccess(res, {
-        payment: existing.rows[0],
-        message: "Payment order already exists"
-      });
+    if (!amount || isNaN(amount)) {
+      return sendError(res, "Valid amount is required", 400);
     }
 
-    const result = await pool.query(
+    const parsedAmount = Number(amount);
+
+    if (parsedAmount < 10) {
+      return sendError(res, "Minimum recharge amount is ₹10", 400);
+    }
+
+    if (parsedAmount > 50000) {
+      return sendError(res, "Maximum recharge amount is ₹50,000", 400);
+    }
+
+    const razorpay = await getRazorpayInstance();
+    const settings = await getPaymentSettings();
+
+    const order = await razorpay.orders.create({
+      amount: parsedAmount * 100, // paise
+      currency: "INR",
+      receipt: `wallet_${user_id}_${Date.now()}`
+    });
+
+    const paymentResult = await pool.query(
       `INSERT INTO payments
        (user_id, amount, status, order_id, gateway)
-       VALUES ($1, $2, 'pending', $3, $4)
-       RETURNING id, user_id, amount, status, payment_id, order_id, gateway, created_at`,
-      [user_id, amount, order_id, gateway]
+       VALUES ($1, $2, 'pending', $3, 'razorpay')
+       RETURNING *`,
+      [user_id, parsedAmount, order.id]
     );
 
     return sendSuccess(res, {
-      payment: result.rows[0]
+      key_id: settings.razorpay_key_id,
+      order,
+      payment: paymentResult.rows[0]
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("CREATE RECHARGE ORDER ERROR:", err);
     return sendError(res, err.message, 500);
   }
 };
 
+/**
+ * Verify Razorpay Payment and Credit Wallet
+ */
 exports.verifyRecharge = async (req, res) => {
   const client = await pool.connect();
 
@@ -48,7 +100,42 @@ exports.verifyRecharge = async (req, res) => {
     await client.query("BEGIN");
 
     const user_id = req.user.user_id;
-    const { order_id, payment_id, gateway, success } = req.body;
+
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body;
+
+    if (
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
+      await client.query("ROLLBACK");
+      return sendError(res, "Missing payment verification fields", 400);
+    }
+
+    const settings = await getPaymentSettings(client);
+
+    const expectedSignature = crypto
+      .createHmac("sha256", settings.razorpay_secret)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
+
+    if (expectedSignature !== razorpay_signature) {
+      await client.query("ROLLBACK");
+
+      await client.query(
+        `UPDATE payments
+         SET status = 'failed',
+             payment_id = $1
+         WHERE order_id = $2`,
+        [razorpay_payment_id, razorpay_order_id]
+      );
+
+      return sendError(res, "Invalid payment signature", 400);
+    }
 
     const paymentResult = await client.query(
       `SELECT *
@@ -56,41 +143,22 @@ exports.verifyRecharge = async (req, res) => {
        WHERE order_id = $1
          AND user_id = $2
        FOR UPDATE`,
-      [order_id, user_id]
+      [razorpay_order_id, user_id]
     );
 
-    if (paymentResult.rows.length === 0) {
+    if (!paymentResult.rows.length) {
       await client.query("ROLLBACK");
-      return sendError(res, "Payment order not found", 404);
+      return sendError(res, "Payment record not found", 404);
     }
 
     const payment = paymentResult.rows[0];
 
     if (payment.status === "success") {
       await client.query("COMMIT");
+
       return sendSuccess(res, {
         message: "Payment already verified",
         payment
-      });
-    }
-
-    if (!success) {
-      const failedUpdate = await client.query(
-        `UPDATE payments
-         SET status = 'failed',
-             payment_id = COALESCE($1, payment_id),
-             gateway = $2
-         WHERE id = $3
-         RETURNING *`,
-        [payment_id || null, gateway, payment.id]
-      );
-
-      await client.query("COMMIT");
-
-      return sendError(res, "Payment verification failed", 400, {
-        data: {
-          payment: failedUpdate.rows[0]
-        }
       });
     }
 
@@ -102,26 +170,25 @@ exports.verifyRecharge = async (req, res) => {
       amount: payment.amount
     });
 
-    const successUpdate = await client.query(
+    const updatedPayment = await client.query(
       `UPDATE payments
        SET status = 'success',
-           payment_id = $1,
-           gateway = $2
-       WHERE id = $3
+           payment_id = $1
+       WHERE id = $2
        RETURNING *`,
-      [payment_id || null, gateway, payment.id]
+      [razorpay_payment_id, payment.id]
     );
 
     await client.query("COMMIT");
 
     return sendSuccess(res, {
-      message: "Wallet recharge verified successfully",
-      payment: successUpdate.rows[0]
+      message: "Wallet recharged successfully",
+      payment: updatedPayment.rows[0]
     });
 
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(err);
+    console.error("VERIFY RECHARGE ERROR:", err);
     return sendError(res, err.message, 500);
   } finally {
     client.release();
