@@ -1,19 +1,29 @@
 const rateLimit = require("express-rate-limit");
 
-// 🔹 Global limiter
+// GLOBAL LIMITER
 exports.globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // max 100 requests per IP
+  windowMs: 15 * 60 * 1000,
+
+  max:
+    process.env.NODE_ENV === "production"
+      ? 1000
+      : 5000,
+
   message: {
     success: false,
     message: "Too many requests, try again later"
   }
 });
 
-// 🔹 Strict limiter (for auth / QR)
+// STRICT LIMITER
 exports.strictLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10, // stricter
+
+  max:
+    process.env.NODE_ENV === "production"
+      ? 30
+      : 500,
+
   message: {
     success: false,
     message: "Too many attempts, try later"
