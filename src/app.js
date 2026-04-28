@@ -32,6 +32,7 @@ app.use(cors({
     "https://qr-app-admin.vercel.app",
     "https://qr-app-admin-e6t4bn7ba-letsuseeco-webs-projects.vercel.app",
     "https://qr-app-scan.vercel.app",
+    "https://qr-app-user.vercel.app",
     "http://localhost:5173",
     "http://localhost:3000"
   ],
