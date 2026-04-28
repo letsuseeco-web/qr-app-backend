@@ -9,15 +9,13 @@ exports.scanQR = async (req, res) => {
   try {
     const { qr_code } = req.params;
 
-    // 🔥 GET IP
     const ip =
       req.headers["x-forwarded-for"] ||
       req.socket.remoteAddress;
 
-    // 🔥 GET DEVICE
     const device = req.headers["user-agent"];
 
-    // 🔹 1. Find QR
+    // 1. Find QR
     const qrResult = await client.query(
       "SELECT * FROM qr_codes WHERE qr_code = $1",
       [qr_code]
@@ -33,10 +31,10 @@ exports.scanQR = async (req, res) => {
 
     const qr = qrResult.rows[0];
 
-    // 🔥 2. LOG WITH FULL DATA
+    // 2. Log Scan
     await logScan(qr_code, ip, device);
 
-    // 🔹 3. If QR not assigned
+    // 3. Unassigned
     if (qr.ownership_status === "unused") {
       return sendSuccess(res, {
         status: "unassigned",
@@ -44,7 +42,7 @@ exports.scanQR = async (req, res) => {
       });
     }
 
-    // 🔹 4. Sleep mode
+    // 4. Sleep Mode
     if (qr.operational_status === "sleep") {
       return sendSuccess(res, {
         status: "inactive",
@@ -52,16 +50,7 @@ exports.scanQR = async (req, res) => {
       });
     }
 
-    // 🔹 5. Lost mode
-    if (qr.operational_status === "lost") {
-      return sendSuccess(res, {
-        status: "lost",
-        message: "This item is marked as LOST. Please contact owner.",
-        reward: qr.reward
-      });
-    }
-
-    // 🔹 6. Disabled
+    // 5. Disabled
     if (qr.operational_status === "disabled_by_admin") {
       return sendSuccess(res, {
         status: "disabled",
@@ -69,11 +58,15 @@ exports.scanQR = async (req, res) => {
       });
     }
 
-    // 🔹 7. User
     await client.query("BEGIN");
 
-    const userPlan = await normalizeUserPlan(client, qr.assigned_to_user);
+    // 6. User Plan
+    const userPlan = await normalizeUserPlan(
+      client,
+      qr.assigned_to_user
+    );
 
+    // 7. User
     const userResult = await client.query(
       `SELECT u.id, u.name, u.phone
        FROM users u
@@ -82,9 +75,12 @@ exports.scanQR = async (req, res) => {
     );
 
     const user = userResult.rows[0] || null;
-    const shouldHidePhone = userPlan.plan === "PREMIUM";
 
-    // 🔹 8. Contacts
+    const shouldHidePhone =
+      userPlan.plan === "PREMIUM" &&
+      qr.operational_status !== "lost";
+
+    // 8. Contacts
     const contactsResult = await client.query(
       `SELECT ec.name, ec.phone, ec.relation
        FROM qr_contact_mapping qcm
@@ -99,10 +95,10 @@ exports.scanQR = async (req, res) => {
       whatsapp_phone: contact.phone
     }));
 
-    // 🔹 9. Medical
+    // 9. Medical
     const medicalResult = await client.query(
-      `SELECT blood_group, conditions, allergies 
-       FROM medical_records 
+      `SELECT blood_group, conditions, allergies
+       FROM medical_records
        WHERE user_id = $1`,
       [qr.assigned_to_user]
     );
@@ -111,18 +107,44 @@ exports.scanQR = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // 🔹 10. Final response
+    // 10. Lost Mode
+    if (qr.operational_status === "lost") {
+      return sendSuccess(res, {
+        status: "lost",
+        message: "This item is marked as LOST. Please contact owner.",
+        reward: qr.reward,
+
+        plan: {
+          name: userPlan.plan,
+          status: userPlan.status,
+          end_date: userPlan.end_date
+        },
+
+        user: {
+          name: user?.name || null,
+          phone: user?.phone || null
+        },
+
+        contacts,
+        medical
+      });
+    }
+
+    // 11. Active Mode
     return sendSuccess(res, {
       status: "active",
+
       plan: {
         name: userPlan.plan,
         status: userPlan.status,
         end_date: userPlan.end_date
       },
+
       user: {
         name: user?.name || null,
         phone: shouldHidePhone ? null : user?.phone || null
       },
+
       contacts,
       medical
     });
@@ -131,10 +153,16 @@ exports.scanQR = async (req, res) => {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
-      console.error("Scan rollback failed:", rollbackError.message);
+      console.error(
+        "Scan rollback failed:",
+        rollbackError.message
+      );
     }
+
     console.error(error);
+
     return sendError(res, error.message, 500);
+
   } finally {
     client.release();
   }
