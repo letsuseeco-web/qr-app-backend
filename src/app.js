@@ -31,9 +31,9 @@ app.use(cors({
   origin: [
     "https://qr-app-admin.vercel.app",
     "https://qr-app-admin-e6t4bn7ba-letsuseeco-webs-projects.vercel.app",
-    "https://qr-app-admin.vercel.app",
+    "https://qr-app-scan.vercel.app",
     "http://localhost:5173",
-	"http://localhost:3000" 
+    "http://localhost:3000"
   ],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
