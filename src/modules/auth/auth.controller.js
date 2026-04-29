@@ -108,17 +108,28 @@ async function createUser(client, payload) {
 
   await provisionUserRelations(client, user.id);
 
+  if (Number(rewards.signup_bonus || 0) > 0) {
+  await addTransaction({
+    client,
+    user_id: user.id,
+    type: "credit",
+    source: "signup_bonus",
+    amount: rewards.signup_bonus
+  });
+}
+
+if (referrerId) {
   if (Number(rewards.new_user_reward || 0) > 0) {
     await addTransaction({
       client,
       user_id: user.id,
       type: "credit",
-      source: "signup_bonus",
+      source: "referral_signup_bonus",
       amount: rewards.new_user_reward
     });
   }
 
-  if (referrerId && Number(rewards.referrer_reward || 0) > 0) {
+  if (Number(rewards.referrer_reward || 0) > 0) {
     await addTransaction({
       client,
       user_id: referrerId,
@@ -127,7 +138,7 @@ async function createUser(client, payload) {
       amount: rewards.referrer_reward
     });
   }
-
+}
   return user;
 }
 
